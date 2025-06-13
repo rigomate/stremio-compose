@@ -1,0 +1,94 @@
+version: "3.7"
+
+services:
+  # Traefik reverse proxy
+  traefik:
+    image: "traefik:v3"
+    container_name: traefik
+    command:
+      - "--api.insecure=true"  # Enable the Traefik dashboard (remove in production)
+      - "--providers.docker=true"  # Enable Docker as the provider for routing
+      - "--entrypoints.web.address=:80"  # HTTP entry point
+      - "--entrypoints.websecure.address=:443"  # HTTPS entry point
+      - "--certificatesresolvers.myresolver.acme.httpchallenge=true"  # HTTP challenge for Let's Encrypt
+      - "--certificatesresolvers.myresolver.acme.httpchallenge.entrypoint=web"
+      - "--certificatesresolvers.myresolver.acme.email=name@funkyurl.com"  # Your email
+      - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"  # Store certs
+    ports:
+      - "80:80"  # HTTP (for Let's Encrypt challenge)
+      - "443:443"  # HTTPS (for the secure service)
+      - "8080:8080"  # Traefik dashboard (remove in production)
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"  # Allow Traefik to access Docker socket
+      - "./letsencrypt:/letsencrypt"  # Store Let's Encrypt certificates
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+    networks:
+      - web
+    restart: unless-stopped
+
+  # Stremio container (your app)
+  stremio:
+    image: stremio/server
+    container_name: stremio
+    ports:
+      - "11470:11470"  # Exposing the internal HTTP port 11470 (this will be internal)
+    volumes:
+      - "/media/iscsi-disk/stremio/stremio_server:/root/.stremio-server"
+    labels:
+      - "traefik.enable=true"  # Enable Traefik for this container
+      - "traefik.http.routers.stremio.rule=Host(`stremio.funkyurl.com`)"  # Proxy for this domain
+      - "traefik.http.routers.stremio.entrypoints=websecure"  # Use HTTPS
+      - "traefik.http.routers.stremio.tls=true"  # Enable TLS for HTTPS
+      - "traefik.http.routers.stremio.tls.certresolver=myresolver"  # Use Let's Encrypt resolver
+      - "traefik.http.services.stremio.loadbalancer.server.port=11470"  # Internal container port (11470)
+      - "traefik.http.routers.stremio.service=stremio"  # Use service configuration
+      - "traefik.http.middlewares.stremio-ip-whitelist.ipwhitelist.sourcerange=192.168.10.0/24,192.168.178.0/24,10.9.1.0/24"  # Whitelist multiple IP ranges
+      - "traefik.http.routers.stremio.middlewares=stremio-ip-whitelist"  # Apply middleware
+      - "com.centurylinklabs.watchtower.enable=true"
+    networks:
+      - web
+    restart: unless-stopped
+
+  # Stremio NCore addon
+  stremio-ncore-addon:
+    image: detarkende/stremio-ncore-addon:0.8.0
+    container_name: stremio-ncore-addon
+    environment:
+      - NCORE_PASSWORD=  # Set your NCore password
+      - NCORE_USERNAME=  # Set your NCore username
+    restart: unless-stopped
+    ports:
+      - "3000:3000"  # Expose the port for the addon
+      - "3443:3443"
+    volumes:
+      - "/media/iscsi-disk/stremio/stremio-ncore/downloads:/addon/downloads"
+      - "/media/iscsi-disk/stremio/stremio-ncore/config:/addon/config"
+      - "/media/iscsi-disk/stremio/stremio-ncore/torrents:/addon/torrents"
+    labels:
+      - "traefik.enable=true"  # Enable Traefik for this container
+      - "traefik.http.routers.stremio-ncore.rule=Host(`stremio-ncore.funkyurl.com`)"  # Proxy for this domain
+      - "traefik.http.routers.stremio-ncore.entrypoints=websecure"  # Use HTTPS
+      - "traefik.http.routers.stremio-ncore.tls=true"  # Enable TLS for HTTPS
+      - "traefik.http.routers.stremio-ncore.tls.certresolver=myresolver"  # Use Let's Encrypt resolver
+      - "traefik.http.middlewares.stremio-ncore-ip-whitelist.ipwhitelist.sourcerange=192.168.10.0/24,192.168.178.0/24,10.9.1.0/24"  # Whitelist multiple IP ranges
+      - "traefik.http.routers.stremio-ncore.middlewares=stremio-ncore-ip-whitelist"  # Apply middleware
+      - "com.centurylinklabs.watchtower.enable=true"
+    networks:
+      - web
+
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    environment:
+      - WATCHTOWER_CLEANUP=true  # Remove old images
+      - WATCHTOWER_SCHEDULE=0 3 * * *  # Run every night at 3 AM
+      - WATCHTOWER_LABEL_ENABLE=true  # Only update labeled containers
+    restart: unless-stopped
+
+
+networks:
+  web:
+    external: true
